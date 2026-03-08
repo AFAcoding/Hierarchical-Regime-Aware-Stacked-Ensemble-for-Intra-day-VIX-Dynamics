@@ -254,8 +254,8 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         logging.info("No new records to insert")
 
     # --- Discord Notification ---
-```
     # webhook_url = "<BLURRED_FOR_SECURITY>"
     # requests.post(webhook_url, json={"content": "<formatted metrics table>"})
 
     logging.info("Timer finished.")
+```
