@@ -87,7 +87,7 @@ The core of the project is an **automated Azure Function pipeline**, executing m
      }
      ```
 
-4. **Automated Discord Reporting**
+4. **Automated Discord Reporting** -> https://discord.gg/j2KshhYmxp
    - Sends daily updates of latest metrics and 5-day changes  
    - Generates formatted tables of features and technical metrics  
    - Webhook URL is **blurred for security** in the public repository  
