@@ -98,7 +98,7 @@ The core of the project is an **automated Azure Function pipeline**, executing m
 ---
 
 ## Azure Function Code (Open Source Template)
-
+```python
 import logging
 import pandas as pd
 import numpy as np
@@ -254,6 +254,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         logging.info("No new records to insert")
 
     # --- Discord Notification ---
+```
     # webhook_url = "<BLURRED_FOR_SECURITY>"
     # requests.post(webhook_url, json={"content": "<formatted metrics table>"})
 
