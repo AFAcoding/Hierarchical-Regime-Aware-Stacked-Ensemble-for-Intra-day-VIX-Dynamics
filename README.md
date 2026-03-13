@@ -364,7 +364,7 @@ This ensures the dataset is **updated daily before the main trading session evol
 
 # Azure Function Code
 
-The following section contains the **full open-source implementation of the ETL pipeline**.
+The following section contains the preview **full open-source implementation of the ETL pipeline**.
 
 ```python
 import logging
@@ -395,6 +395,40 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     logging.info("Timer started.")
 
     # --- ETL ---
+    sp500 = yf.Ticker("^GSPC").history(period="3y")
+    vix = yf.Ticker("^VIX").history(period="3y")
+    move = yf.Ticker("^MOVE").history(period="3y")
+    vix3m = yf.Ticker("^VIX3M").history(period="3y")
+    dxy = yf.Ticker("DX-Y.NYB").history(period="3y")
+    gold = yf.Ticker("GC=F").history(period="3y")
+    oil = yf.Ticker("CL=F").history(period="3y")
+    hvyg = yf.Ticker("HYG").history(period="3y")
+    ivig = yf.Ticker("LQD").history(period="3y")
+
+    sp500 = sp500.drop(columns=["Dividends","Stock Splits"])
+    vix = vix.drop(columns=["Dividends","Stock Splits","Volume"])
+    move = move.drop(columns=["Dividends","Stock Splits","Volume"])
+    vix3m = vix3m.drop(columns=["Dividends","Stock Splits","Volume"])
+    dxy = dxy.drop(columns=["Dividends","Stock Splits","Volume"])
+    gold = gold.drop(columns=["Dividends","Stock Splits","Volume"])
+    oil = oil.drop(columns=["Dividends","Stock Splits","Volume"])
+    hvyg = hvyg.drop(columns=["Dividends","Stock Splits","Volume"])
+    ivig = ivig.drop(columns=["Dividends","Stock Splits","Volume"])
+
+    def rename_asset(df,suffix):
+        return df.rename(columns={
+            "Open":f"Open_{suffix}",
+            "High":f"High_{suffix}",
+            "Low":f"Low_{suffix}",
+            "Close":f"Close_{suffix}",
+            "Volume":f"Volume_{suffix}"
+        })
+
+    sp500 = rename_asset(sp500,"SP500")
+    vix = rename_asset(vix,"VIX")
+    move = rename_asset(move,"MOVE")
+    vix3m = rename_asset(vix3m,"VIX3M")
+    dxy = rename_asset(dxy,"DXY")
 ```
 ### Full source code:  [`function_app.py`](function_app.py)
 ---
