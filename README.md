@@ -396,5 +396,5 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     # --- ETL ---
 ```
-    ➡️ **[Open full pipeline code](src/function_app.py)**    
+📄 **Full source code:**  [`src/function_app.py`](src/function_app.py) 
 ---
