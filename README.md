@@ -299,7 +299,7 @@ Database writes use **MongoDB upserts**, preventing duplicate entries.
 
 # Automated Discord Monitoring
 
-A reporting module sends **daily diagnostics to Discord**.
+A reporting module sends **daily diagnostics to Discord**. -> https://discord.gg/j2KshhYmxp 
 
 Reports include:
 
