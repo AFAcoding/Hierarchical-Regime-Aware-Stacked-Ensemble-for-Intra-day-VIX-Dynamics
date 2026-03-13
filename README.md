@@ -5,101 +5,341 @@
 
 ---
 
-## Overview
+# Overview
 
-This repository implements a **regime-aware, stacked multi-model ensemble** for **categorical intraday prediction of the CBOE VIX**, designed for **research, risk management, and quantitative trading**.  
+This repository implements a **regime-aware stacked ensemble system** designed to **predict intraday movements of the CBOE VIX** using machine learning models and market-derived features.
 
-The system captures **non-linear dependencies** and **regime-based market dynamics** using multiple supervised learning models in a **stacked ensemble framework**.
+The objective is to capture **non-linear relationships, volatility clustering, and market regime dynamics** through a **multi-model architecture** trained on historical financial data.
 
-**Key Capabilities:**
+The system is built for:
 
-- Predict intraday VIX movements across Low/Medium/High volatility regimes  
-- Incorporate historical VIX metrics, S&P 500 indicators, and derived features  
-- Automated daily pipeline for cloud-based feature updates and predictions  
-- Real-time reporting via Discord alerts  
+- Quantitative research
+- Volatility modelling
+- Risk monitoring
+- Trading experimentation
 
----
-
-## Azure Function Pipeline
-
-The core of the project is an **automated Azure Function pipeline**, executing market ETL, feature computation, and MongoDB storage **every trading day**.  
-
-### Pipeline Highlights
-
-1. **Data Extraction**
-   - Pulls historical market data for:
-     - S&P 500 (`^GSPC`)
-     - VIX (`^VIX`)
-     - MOVE index (`^MOVE`)
-   - Uses `yfinance` for historical OHLC prices  
-   - Cleans and aligns timestamps  
-
-2. **Feature Engineering**
-   - **Returns & Realized Volatility**
-     ```python
-     dataset["Return_SPX"]  = dataset["Close_SP500"].pct_change()
-     dataset["RV_5d"] = dataset["Return_SPX"].rolling(5).std() * np.sqrt(252)
-     ```
-   - **VIX-specific metrics**
-     - VIX volatility (`VIX_Vol_5d`, `VIX_Vol_21d`)  
-     - Mean reversion: rolling averages, Z-scores (`VIX_MA_10`, `VIX_MA_21`, `VIX_Zscore`)  
-     - ΔVIX term structure proxy (`VIX_Trend`)  
-   - **Cross-market & momentum**
-     - S&P/VIX correlations (`SPX_VIX_Corr_21d`)  
-     - Momentum 1M, 3M, 6M  
-   - **Target Construction**
-     ```python
-     dataset["Intraday_VIX_Return"] = (dataset["Close_VIX"] - dataset["Open_VIX"]) / dataset["Open_VIX"]
-     dataset["Intraday_VIX_Move"] = np.where(
-         dataset["Intraday_VIX_Return"] >= q_up, 1,
-         np.where(dataset["Intraday_VIX_Return"] <= q_down, 2, 0)
-     )
-     ```
-
-3. **MongoDB Storage**
-   - Saves processed features and target labels in MongoDB for historical tracking  
-   - Performs **upserts** to prevent duplicate entries  
-   - Example document:
-     ```json
-     {
-       "_id": "2026-03-08T09:30:00Z",
-       "Open_VIX": 22.34,
-       "Close_VIX": 23.01,
-       "Open_SP500": 4087.12,
-       "Drawdown": -0.014,
-       "Momentum_1M": 0.05,
-       "VIX_Zscore": 1.23,
-       "VIX_Trend": "MeanReversion",
-       "VIX_Regime": "High",
-       "Features": {
-         "RV_5d": 0.018,
-         "RV_10d": 0.022,
-         "VIX_Vol_21d": 0.035,
-         "SPX_Gap": -0.002
-       },
-       "Stacked_Model_Prediction": "Up",
-       "Model_Probabilities": {
-         "RandomForest": 0.65,
-         "LightGBM": 0.72,
-         "GradientBoosting": 0.68
-       },
-       "Updated_At": "2026-03-08T09:31:00Z"
-     }
-     ```
-
-4. **Automated Discord Reporting** -> https://discord.gg/j2KshhYmxp
-   - Sends daily updates of latest metrics and 5-day changes  
-   - Generates formatted tables of features and technical metrics  
-   - Webhook URL is **blurred for security** in the public repository  
-
-5. **Execution Schedule**
-   - Triggered **Monday to Friday at 15:35 ET** via Azure Function timer
+The project also includes a **fully automated cloud pipeline** that performs daily **data extraction, feature engineering, database storage, and monitoring**.
 
 ---
 
-## Azure Function Code (Open Source Template)
+# Key Capabilities
+
+## Intraday VIX Direction Classification
+
+The system predicts categorical VIX movements:
+
+| Class | Meaning |
+|------|------|
+| `0` | Neutral |
+| `1` | VIX Up |
+| `2` | VIX Down |
+
+This converts a continuous volatility signal into a **classification problem suitable for ensemble models**.
+
+---
+
+## Regime-Aware Feature Engineering
+
+Features are designed to capture different **market regimes**, including:
+
+- Realized volatility
+- Implied volatility behaviour
+- Cross-market correlations
+- Momentum
+- Credit spreads
+- Macro proxies
+
+---
+
+## Stacked Multi-Model Architecture
+
+The modelling framework uses multiple supervised learning models combined into a **stacked ensemble**, improving:
+
+- predictive stability
+- robustness to regime changes
+- generalization performance
+
+Typical base models may include:
+
+- Random Forest
+- Gradient Boosting
+- LightGBM
+- Logistic models
+
+---
+
+## Automated Cloud Pipeline
+
+A **serverless Azure Function** performs the entire ETL pipeline daily:
+
+1. Download market data
+2. Compute financial features
+3. Generate prediction targets
+4. Store results in MongoDB
+5. Send monitoring reports
+
+---
+
+## Cloud Database Storage
+
+All processed features and labels are stored in **MongoDB**, enabling:
+
+- historical dataset reconstruction
+- model training
+- prediction monitoring
+
+---
+
+## Real-Time Monitoring
+
+The system automatically sends **daily market diagnostics to Discord**, including:
+
+- feature values
+- 5-day changes
+- market signals
+- diagnostic charts
+
+---
+
+# System Architecture
+
+The system follows a simple automated pipeline:
+
+```
+Market Data (Yahoo Finance)
+        │
+        ▼
+Azure Function ETL Pipeline
+        │
+        ▼
+Feature Engineering
+        │
+        ▼
+MongoDB Storage
+        │
+        ▼
+Model Training / Predictions
+        │
+        ▼
+Discord Monitoring
+```
+
+The **Azure Function** acts as the central component responsible for **daily ETL operations**.
+
+---
+
+# Azure Function Pipeline
+
+The Azure Function executes a **daily automated pipeline** consisting of:
+
+1. Data Extraction  
+2. Feature Engineering  
+3. Target Construction  
+4. MongoDB Storage  
+5. Discord Reporting  
+
+The pipeline runs automatically through a **timer trigger**.
+
+---
+
+# Pipeline Step 1 — Data Extraction
+
+Market data is retrieved using **Yahoo Finance (`yfinance`)**.
+
+Assets include several market segments.
+
+## Equity Market
+
+- `^GSPC` → S&P 500
+
+## Volatility Market
+
+- `^VIX` → CBOE Volatility Index
+- `^VIX3M` → 3-Month VIX
+
+## Fixed Income Volatility
+
+- `^MOVE` → MOVE Index
+
+## Macro Assets
+
+- `DX-Y.NYB` → US Dollar Index
+- `GC=F` → Gold
+- `CL=F` → Crude Oil
+
+## Credit Market
+
+- `HYG` → High Yield ETF
+- `LQD` → Investment Grade Credit ETF
+
+All datasets are cleaned and merged into a **single time-indexed dataset**.
+
+---
+
+# Pipeline Step 2 — Feature Engineering
+
+A wide range of **financial features** is generated to capture market dynamics.
+
+---
+
+## Returns & Realized Volatility
+
+```python
+dataset["Return_SPX"] = dataset["Close_SP500"].pct_change()
+
+dataset["RV_5d"] = dataset["Return_SPX"].rolling(5).std() * np.sqrt(252)
+dataset["RV_10d"] = dataset["Return_SPX"].rolling(10).std() * np.sqrt(252)
+dataset["RV_21d"] = dataset["Return_SPX"].rolling(21).std() * np.sqrt(252)
+```
+
+These features measure **short- and medium-term realized volatility of the equity market**.
+
+---
+
+## VIX Behaviour
+
+Several indicators describe the **structure and dynamics of implied volatility**.
+
+Examples include:
+
+- rolling volatility
+- moving averages
+- lagged values
+- percentile ranks
+- mean-reversion signals
+
+Example implementation:
+
+```python
+dataset["VIX_MA_10"] = dataset["Close_VIX"].rolling(10).mean()
+dataset["VIX_STD_10"] = dataset["Close_VIX"].rolling(10).std()
+
+dataset["VIX_Zscore"] = (
+    dataset["Close_VIX"] - dataset["VIX_MA_20"]
+) / dataset["VIX_STD_10"]
+```
+
+These metrics help detect **extreme volatility regimes**.
+
+---
+
+## Cross-Market Signals
+
+Interactions between markets often provide useful predictive signals.
+
+Example:
+
+```python
+dataset["SPX_VIX_Corr_21d"] = (
+    dataset["Return_SPX"]
+    .rolling(21)
+    .corr(dataset["Return_VIX"])
+)
+```
+
+These signals capture **risk-on vs risk-off behaviour**.
+
+---
+
+# Target Construction
+
+The prediction target is the **intraday return of the VIX**.
+
+```python
+dataset["Intraday_VIX_Return"] = (
+    dataset["Close_VIX"] - dataset["Open_VIX"]
+) / dataset["Open_VIX"]
+```
+
+The continuous return is converted into **three categories** using quantiles.
+
+```python
+q_up = dataset["Intraday_VIX_Return"].quantile(0.66)
+q_down = dataset["Intraday_VIX_Return"].quantile(0.33)
+
+dataset["Intraday_VIX_Move"] = np.where(
+    dataset["Intraday_VIX_Return"] >= q_up, 1,
+    np.where(dataset["Intraday_VIX_Return"] <= q_down, 2, 0)
+)
+```
+
+This produces a **balanced classification problem**.
+
+---
+
+# MongoDB Storage
+
+All processed features and targets are stored in **MongoDB**.
+
+Each document represents a **daily market snapshot**.
+
+Example:
+
+```json
+{
+  "_id": "2026-03-08T09:30:00Z",
+  "Open_VIX": 22.34,
+  "Close_VIX": 23.01,
+  "Open_SP500": 4087.12,
+  "Drawdown": -0.014,
+  "Momentum_1M": 0.05,
+  "VIX_Zscore": 1.23,
+  "Features": {
+    "RV_5d": 0.018,
+    "RV_10d": 0.022,
+    "VIX_Vol_21d": 0.035
+  },
+  "Updated_At": "2026-03-08T09:31:00Z"
+}
+```
+
+Database writes use **MongoDB upserts**, preventing duplicate entries.
+
+---
+
+# Automated Discord Monitoring
+
+A reporting module sends **daily diagnostics to Discord**.
+
+Reports include:
+
+- feature values
+- 5-day changes
+- market indicators
+- volatility metrics
+- charts
+
+Example output:
+
+<img width="692" height="664" alt="image" src="https://github.com/user-attachments/assets/2654a848-b61f-4e76-85ff-f0fa75bbe649" />
+
+The system also generates **diagnostic charts comparing VIX levels and SPX intraday behaviour**.
+
+For security reasons, the **Discord webhook URL is not included in the public repository**.
+
+---
+
+# Execution Schedule
+
+The Azure Function runs automatically using a **timer trigger**.
+
+```
+Monday – Friday
+09:35 AM (ET)
+```
+
+This ensures the dataset is **updated daily before the main trading session evolves**.
+
+---
+
+# Azure Function Code
+
+The following section contains the **full open-source implementation of the ETL pipeline**.
+
 ```python
 import logging
+import os
+import datetime
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -107,155 +347,279 @@ from pymongo import MongoClient, UpdateOne
 import certifi
 import azure.functions as func
 import requests
-
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-from sklearn.metrics import precision_score
-from hmmlearn.hmm import VariationalGaussianHMM
+from io import BytesIO
+import matplotlib.pyplot as plt
 
 app = func.FunctionApp()
 
-@app.timer_trigger(schedule="0 35 15 * * 1-5", arg_name="myTimer")
+@app.timer_trigger(
+    schedule="0 35 9 * * 1-5",  # Monday to Friday 9:35 AM ET
+    arg_name="myTimer",
+    run_on_startup=False,
+    use_monitor=True
+)
 def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     if myTimer.past_due:
         logging.warning("The timer is past due!")
 
     logging.info("Timer started.")
 
-    # --- ETL: download market data ---
-    sp500 = yf.Ticker("^GSPC").history(period="20y").drop(columns=["Dividends","Stock Splits"])
-    vix   = yf.Ticker("^VIX").history(period="20y").drop(columns=["Dividends","Stock Splits","Volume"])
-    move  = yf.Ticker("^MOVE").history(period="20y").drop(columns=["Dividends","Stock Splits","Volume"])
+    # --- ETL ---
+    sp500 = yf.Ticker("^GSPC").history(period="3y")
+    vix = yf.Ticker("^VIX").history(period="3y")
+    move = yf.Ticker("^MOVE").history(period="3y")
+    vix3m = yf.Ticker("^VIX3M").history(period="3y")
+    dxy = yf.Ticker("DX-Y.NYB").history(period="3y")
+    gold = yf.Ticker("GC=F").history(period="3y")
+    oil = yf.Ticker("CL=F").history(period="3y")
+    hvyg = yf.Ticker("HYG").history(period="3y")
+    ivig = yf.Ticker("LQD").history(period="3y")
 
-    # --- Feature engineering ---
-    for df, suffix in zip([sp500, vix, move], ["SP500","VIX","MOVE"]):
+    sp500 = sp500.drop(columns=["Dividends","Stock Splits"])
+    vix = vix.drop(columns=["Dividends","Stock Splits","Volume"])
+    move = move.drop(columns=["Dividends","Stock Splits","Volume"])
+    vix3m = vix3m.drop(columns=["Dividends","Stock Splits","Volume"])
+    dxy = dxy.drop(columns=["Dividends","Stock Splits","Volume"])
+    gold = gold.drop(columns=["Dividends","Stock Splits","Volume"])
+    oil = oil.drop(columns=["Dividends","Stock Splits","Volume"])
+    hvyg = hvyg.drop(columns=["Dividends","Stock Splits","Volume"])
+    ivig = ivig.drop(columns=["Dividends","Stock Splits","Volume"])
+
+    def rename_asset(df,suffix):
+        return df.rename(columns={
+            "Open":f"Open_{suffix}",
+            "High":f"High_{suffix}",
+            "Low":f"Low_{suffix}",
+            "Close":f"Close_{suffix}",
+            "Volume":f"Volume_{suffix}"
+        })
+
+    sp500 = rename_asset(sp500,"SP500")
+    vix = rename_asset(vix,"VIX")
+    move = rename_asset(move,"MOVE")
+    vix3m = rename_asset(vix3m,"VIX3M")
+    dxy = rename_asset(dxy,"DXY")
+    gold = rename_asset(gold,"GOLD")
+    oil = rename_asset(oil,"OIL")
+    hvyg = rename_asset(hvyg,"HYG")
+    ivig = rename_asset(ivig,"LQD")
+
+    for df in [sp500,vix,move,vix3m,dxy,gold,oil,hvyg,ivig]:
         df.index = df.index.tz_localize(None)
-        df.rename(columns={
-            "Open": f"Open_{suffix}", "High": f"High_{suffix}",
-            "Low": f"Low_{suffix}", "Close": f"Close_{suffix}", 
-            "Volume": f"Volume_{suffix}"
-        }, inplace=True)
 
-    dataset = pd.concat([sp500, vix, move], axis=1).sort_index()
-    dataset["Return_SPX"]  = dataset["Close_SP500"].pct_change()
-    dataset["Return_VIX"]  = dataset["Close_VIX"].pct_change()
-    dataset["Return_MOVE"] = dataset["Close_MOVE"].pct_change()
+    dataset = pd.concat([sp500,vix,move,vix3m,dxy,gold,oil,hvyg,ivig],axis=1).sort_index()
 
-    # Realized volatility
-    dataset["RV_5d"]  = dataset["Return_SPX"].rolling(5).std() * np.sqrt(252)
-    dataset["RV_10d"] = dataset["Return_SPX"].rolling(10).std() * np.sqrt(252)
-    dataset["RV_21d"] = dataset["Return_SPX"].rolling(21).std() * np.sqrt(252)
+    dataset["Return_SPX"]  = dataset["Close_SP500"].pct_change(fill_method=None)
+    dataset["Return_VIX"]  = dataset["Close_VIX"].pct_change(fill_method=None)
+    dataset["Return_MOVE"] = dataset["Close_MOVE"].pct_change(fill_method=None)
+    dataset["Return_VIX3M"]= dataset["Close_VIX3M"].pct_change(fill_method=None)
+    dataset["RV_5d"] = dataset["Return_SPX"].rolling(5).std()*np.sqrt(252)
+    dataset["RV_10d"] = dataset["Return_SPX"].rolling(10).std()*np.sqrt(252)
+    dataset["RV_21d"] = dataset["Return_SPX"].rolling(21).std()*np.sqrt(252)
+    dataset["VIX_Vol_5d"] = dataset["Return_VIX"].rolling(5).std()
+    dataset["VIX_Vol_10d"] = dataset["Return_VIX"].rolling(10).std()
+    dataset["VIX_Vol_21d"] = dataset["Return_VIX"].rolling(21).std()
+    dataset["VIX_Lag1"] = dataset["Close_VIX"].shift(1)
+    dataset["VIX_Lag2"] = dataset["Close_VIX"].shift(2)
+    dataset["VIX_Lag5"] = dataset["Close_VIX"].shift(5)
+    dataset["VIX_MA_5"] = dataset["Close_VIX"].rolling(5).mean()
+    dataset["VIX_MA_10"] = dataset["Close_VIX"].rolling(10).mean()
+    dataset["VIX_MA_20"] = dataset["Close_VIX"].rolling(20).mean()
+    dataset["VIX_STD_5"] = dataset["Close_VIX"].rolling(5).std()
+    dataset["VIX_STD_10"] = dataset["Close_VIX"].rolling(10).std()
+    dataset["VIX_Percentile"] = dataset["Close_VIX"].rank(pct=True)
+    dataset["SPX_Volume_Norm"] = dataset["Volume_SP500"]/dataset["Volume_SP500"].rolling(252).mean()
+    dataset["VIX3M_Spread"] = dataset["Close_VIX"] - dataset["Close_VIX3M"]
+    dataset["VIX_Contango"] = dataset["Close_VIX3M"]/dataset["Close_VIX"] - 1
+    dataset["SPX_Gap"] = (dataset["Open_SP500"] - dataset["Close_SP500"].shift(1))/dataset["Close_SP500"].shift(1)
+    dataset["VIX_Gap"] = (dataset["Open_VIX"] - dataset["Close_VIX"].shift(1))/dataset["Close_VIX"].shift(1)
+    dataset["Drawdown"] = dataset["Close_SP500"]/dataset["Close_SP500"].cummax() -1
+    dataset["Momentum_1M"] = dataset["Close_SP500"]/dataset["Close_SP500"].shift(21)-1
+    dataset["Momentum_3M"] = dataset["Close_SP500"]/dataset["Close_SP500"].shift(63)-1
+    dataset["Momentum_6M"] = dataset["Close_SP500"]/dataset["Close_SP500"].shift(126)-1
+    dataset["VIX_Zscore"] = (dataset["Close_VIX"]-dataset["VIX_MA_20"])/dataset["VIX_STD_10"]
+    dataset["VIX_MeanRev"] = dataset["Close_VIX"] - dataset["VIX_MA_10"]
+    dataset["IV_RV_Ratio"] = dataset["Close_VIX"]/dataset["RV_21d"]
+    dataset["VIX_RV_Spread"] = dataset["Close_VIX"] - dataset["RV_21d"]
+    dataset["VIX_Trend"] = dataset["Close_VIX"].ewm(span=21,adjust=False).mean() - dataset["Close_VIX"].ewm(span=63,adjust=False).mean()
+    dataset["VIX_MOVE_Ratio"] = dataset["Close_VIX"]/dataset["Close_MOVE"]
+    dataset["SPX_VIX_Corr_21d"] = dataset["Return_SPX"].rolling(21).corr(dataset["Return_VIX"])
+    dataset["RV_21d_Sq"] = dataset["RV_21d"]**2
+    dataset["VIX_Zscore_Sq"] = dataset["VIX_Zscore"]**2
+    dataset["Intraday_VIX_Return"] = (dataset["Close_VIX"]-dataset["Open_VIX"])/dataset["Open_VIX"]
+    q_up = dataset["Intraday_VIX_Return"].quantile(0.66)
+    q_down = dataset["Intraday_VIX_Return"].quantile(0.33)
+    dataset["Intraday_VIX_Move"] = np.where(dataset["Intraday_VIX_Return"]>=q_up,1,np.where(dataset["Intraday_VIX_Return"]<=q_down,2,0))
 
-    # Momentum
-    dataset["Momentum_1M"] = dataset["Close_SP500"].pct_change(21)
-    dataset["Momentum_3M"] = dataset["Close_SP500"].pct_change(63)
-    dataset["Momentum_6M"] = dataset["Close_SP500"].pct_change(126)
-
-    # Mean reversion / Z-score
-    dataset["VIX_MA_10"] = dataset["Open_VIX"].rolling(10).mean()
-    dataset["VIX_MA_21"] = dataset["Open_VIX"].rolling(21).mean()
-    dataset["VIX_STD_21"] = dataset["Open_VIX"].rolling(21).std()
-    dataset["VIX_Zscore"] = (dataset["Open_VIX"] - dataset["VIX_MA_21"]) / dataset["VIX_STD_21"]
-    dataset["VIX_MeanRev"] = dataset["Open_VIX"] - dataset["VIX_MA_10"]
-
-    # Target
-    dataset["Intraday_VIX_Return"] = (dataset["Close_VIX"] - dataset["Open_VIX"]) / dataset["Open_VIX"]
-    q_up, q_down = dataset["Intraday_VIX_Return"].quantile([0.66, 0.33])
-    dataset["Intraday_VIX_Move"] = np.where(
-        dataset["Intraday_VIX_Return"] >= q_up, 1,
-        np.where(dataset["Intraday_VIX_Return"] <= q_down, 2, 0)
-    )
-
-    # Drop NaNs
     feature_cols = [
         "Open_SP500","Open_VIX","Open_MOVE",
-        "Drawdown","Momentum_1M","Momentum_3M","Momentum_6M",
-        "RV_5d","RV_10d","RV_21d","VIX_Zscore","VIX_MeanRev"
+        "Drawdown",
+        "Momentum_1M","Momentum_3M","Momentum_6M",
+        "RV_5d","RV_10d","RV_21d",
+        "VIX_Vol_5d","VIX_Vol_10d","VIX_Vol_21d",
+        "VIX_Lag1","VIX_Lag2","VIX_Lag5",
+        "VIX_MA_5","VIX_MA_10","VIX_MA_20",
+        "VIX_STD_5","VIX_STD_10","VIX_Percentile",
+        "SPX_Volume_Norm",
+        "VIX3M_Spread","VIX_Contango",
+        "SPX_Gap","VIX_Gap",
+        "VIX_Zscore","VIX_Zscore_Sq","VIX_MeanRev",
+        "IV_RV_Ratio","VIX_RV_Spread","VIX_Trend",
+        "VIX_MOVE_Ratio","SPX_VIX_Corr_21d","RV_21d_Sq",
+        "Close_DXY","Close_GOLD","Close_OIL",
+        "Close_HYG","Close_LQD"
     ]
-    data_final = dataset[feature_cols + ["Intraday_VIX_Move"]].dropna()
 
-    # --- ML Pipeline: Stacked Ensemble with HMM regime ---
-    # Base models
-    model_r_forest_simple = RandomForestClassifier(
-        n_estimators=1000, max_depth=6, min_samples_split=20,
-        min_samples_leaf=10, max_features='sqrt', bootstrap=True,
-        oob_score=True, n_jobs=-1, random_state=42
-    )
-    model_r_forest_complex = RandomForestClassifier(
-        n_estimators=1000, max_depth=12, min_samples_split=5,
-        min_samples_leaf=2, max_features='sqrt', bootstrap=True,
-        n_jobs=-1, random_state=42
-    )
-    stack_classify = VotingClassifier(
-        estimators=[('r_forest_simple', model_r_forest_simple),
-                    ('r_forest_complex', model_r_forest_complex)],
-        voting='soft', n_jobs=-1
-    )
+    data_final = dataset[feature_cols + ["Intraday_VIX_Move"]]
 
-    # Example splits (to be replaced with your train/test splits)
-    splits = [(data_final[feature_cols].iloc[:-50], data_final[feature_cols].iloc[-50:],
-               data_final["Intraday_VIX_Move"].iloc[:-50], data_final["Intraday_VIX_Move"].iloc[-50:])]
-
-    hmm_cols = ["RV_21d", "VIX_Zscore"]
-    scaler = StandardScaler()
-    pred_real = pd.DataFrame()
-    scores = []
-
-    for i, (X_train, X_test, Y_train, Y_test) in enumerate(splits):
-        if X_test is None or Y_test is None:
-            continue
-
-        # HMM Regime Detection
-        X_train_hmm_scaled = scaler.fit_transform(X_train[hmm_cols])
-        hmm = VariationalGaussianHMM(n_components=3, covariance_type="full", n_iter=1400,
-                                     tol=1e-3, random_state=42, init_params="stmc", params="stmc")
-        hmm.fit(X_train_hmm_scaled)
-        train_probs = hmm.predict_proba(X_train_hmm_scaled)
-        X_test_hmm_scaled = scaler.transform(X_test[hmm_cols])
-        test_probs = hmm.predict_proba(X_test_hmm_scaled)
-        for s in range(train_probs.shape[1]):
-            X_train[f"hmm_state_{s}"] = train_probs[:, s]
-            X_test[f"hmm_state_{s}"] = test_probs[:, s]
-
-        # Train stacked model
-        stack_classify.fit(X_train, Y_train)
-        preds_stack = stack_classify.predict(X_test)
-
-        pred_real = pd.concat([
-            pred_real,
-            pd.DataFrame({
-                'pred_class': preds_stack,
-                'real_class': Y_test.values.ravel(),
-                'residual_class': Y_test.values.ravel() - preds_stack,
-                'test_regime': hmm.predict(X_test_hmm_scaled)
-            }, index=Y_test.index)
-        ])
-
-        precision = precision_score(Y_test, preds_stack, zero_division=0, average="macro")
-        scores.append(precision)
-        logging.info(f"Split {i+1}/{len(splits)} completed")
-
-    logging.info(f"Precision mean: {np.mean(scores)}")
-
-    # --- MongoDB upsert ---
-    mongo_uri = "mongodb+srv://<USERNAME>:<PASSWORD>@<CLUSTER>/DB_VIX"
+    # --- MongoDB ---
+    mongo_uri = os.environ.get("mongo_uri")
     client = MongoClient(mongo_uri, tls=True, tlsCAFile=certifi.where())
     db = client["DB_VIX"]
     collection = db["vix_data"]
 
     data_mongo = data_final.copy()
     data_mongo["_id"] = data_mongo.index.astype(str)
-    operations = [UpdateOne({"_id": r["_id"]}, {"$setOnInsert": r}, upsert=True)
-                  for r in data_mongo.to_dict("records")]
+    records = data_mongo.to_dict("records")
+
+    operations = [
+        UpdateOne({"_id": r["_id"]}, {"$setOnInsert": r}, upsert=True)
+        for r in records
+    ]
     if operations:
         result = collection.bulk_write(operations)
-        logging.info(f"Inserted {result.upserted_count} new records")
+        logging.info(f"New records inserted: {result.upserted_count}")
     else:
-        logging.info("No new records to insert")
-
-    # --- Discord Notification ---
-    # webhook_url = "<BLURRED_FOR_SECURITY>"
-    # requests.post(webhook_url, json={"content": "<formatted metrics table>"})
+        logging.info("No new data to insert.")
 
     logging.info("Timer finished.")
+    
+    # Send last info to Discord
+    last_info_dict = data_final.to_dict(orient="records")[0]
+
+    # Data 5 days ago
+    prev_info_dict = data_final.tail(6).head(1).to_dict(orient="records")[0]
+
+    # Metrics we want to show as percentage points
+    pp_metrics = ["Drawdown", "Momentum_1M", "Momentum_3M", "Momentum_6M",
+                "RV_5d", "RV_10d", "RV_21d", "VIX_Vol_5d", "VIX_Vol_21d"]
+
+    # Construct technical column
+    technical_dict = {}
+    for k in last_info_dict.keys():
+        if isinstance(last_info_dict[k], (int, float)) and isinstance(prev_info_dict[k], (int, float)):
+            diff = last_info_dict[k] - prev_info_dict[k]
+            if k in pp_metrics:
+                diff *= 100  # convertimos a puntos porcentuales
+                technical_dict[k] = f"{diff:+.2f} p.p."
+            else:
+                technical_dict[k] = f"{diff:+.2f}"
+        else:
+            technical_dict[k] = "-"
+
+    # Values 
+    value_str_dict = {}
+    for k, v in last_info_dict.items():
+        if k in pp_metrics:
+            value_str_dict[k] = f"{v*100:.2f}%"  # convertimos a porcentaje
+        else:
+            value_str_dict[k] = f"{v:.2f}"
+            
+    col_width = max(len(k) for k in last_info_dict.keys())
+    val_width = max(len(v) for v in value_str_dict.values())
+    tech_width = max(len(v) for v in technical_dict.values())
+    tech_width = max(tech_width, len("Change(5d)"))
+
+    table_header = f"| {'Feature'.ljust(col_width)} | {'Value'.rjust(val_width)} | {'Change(5d)'.rjust(tech_width)} |"
+    table_divider = f"|{'-'*(col_width+2)}|{'-'*(val_width+2)}|{'-'*(tech_width+2)}|"
+
+    table_rows = "\n".join([
+        f"| {k.ljust(col_width)} | {value_str_dict[k].rjust(val_width)} | {technical_dict[k].rjust(tech_width)} |"
+        for k in last_info_dict.keys()
+    ])
+
+    last_info_str = f"```\n{table_header}\n{table_divider}\n{table_rows}\n```"
+
+    # Send to Discord
+    webhook = os.environ.get("webhook")
+
+    selected_features = [
+    "Open_SP500",
+    "Open_VIX",
+    "Drawdown",
+    "Momentum_1M",
+    "Momentum_3M",
+    "RV_5d",
+    "RV_21d",
+    "VIX_Vol_5d",
+    "VIX_Vol_21d",
+    "VIX_Lag1",
+    "VIX_MA_20",
+    "VIX_STD_10",
+    "VIX_Percentile",
+    "VIX3M_Spread",
+    "VIX_Contango",
+    "SPX_VIX_Corr_21d",
+    "Close_DXY",
+    "Close_GOLD",
+    "Close_OIL"]
+    
+    last, prev = data_final.iloc[-1], data_final.iloc[-6]
+
+    last_date = data_final.index[-1].strftime("%Y-%m-%d")
+    prev_date = data_final.index[-6].strftime("%Y-%m-%d")
+
+    pp = {"Drawdown","Momentum_1M","Momentum_3M","RV_5d","RV_21d","VIX_Vol_5d","VIX_Vol_21d"}
+
+    rows = []
+    for k in selected_features:
+        if k in last.index and isinstance(last[k], (int,float)):
+            name = k
+            val = f"{last[k]*100:.2f}%" if k in pp else f"{last[k]:.2f}"
+            diff = last[k] - prev[k]
+            chg = f"{diff*100:+.2f}pp" if k in pp else f"{diff:+.2f}"
+            emo = "🟢" if diff>0 else "🔴" if diff<0 else "⚪"
+            rows.append((name,val,emo,chg))
+
+    w1 = max(len(r[0]) for r in rows)
+    w2 = max(len(r[1]) for r in rows)
+    w4 = max(len(r[3]) for r in rows)
+
+    table = "\n".join(f"{k:<{w1}} {v:>{w2}} {e}{c:>{w4}}" for k,v,e,c in rows)
+    title = f"Market Snapshot {last_date}  (Δ vs {prev_date})"
+
+    # -------- CHART --------
+
+    last_150 = data_final.tail(150).copy()
+
+    last_150["VIX_Smooth"] = (last_150["Open_VIX"].rolling(30,1).mean().rolling(7,1).mean())
+
+    last_150["SPX_Smooth"] = ((last_150["Open_SP500"] / last_150["Open_SP500"].shift(-1) - 1)*100).rolling(7,1).mean()
+
+    fig, ax1 = plt.subplots(figsize=(16,5))
+
+    ax1.plot(last_150.index,last_150["VIX_Smooth"],lw=2,color="blue",alpha=0.7,label="VIX")
+
+    ax2 = ax1.twinx()
+    ax2.plot(last_150.index,last_150["SPX_Smooth"],lw=2,color="red",alpha=0.5,label="SPX %")
+    ax2.fill_between(last_150.index,last_150["SPX_Smooth"],0,alpha=0.1,color="red")
+    ax2.axhline(0,color="gray",ls="--",lw=1)
+
+    plt.title("VIX vs SPX Intra-day % (150d)")
+    plt.xticks(rotation=45)
+    plt.grid(axis="y",ls="--",alpha=0.3)
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf,format="png")
+    buf.seek(0)
+
+    msg = f"**{title}**\n```\n{table}\n```"
+
+    requests.post(webhook,data={"content": msg},files={"file": ("chart.png", buf, "image/png")})
+
+    buf.close()
+    plt.close(fig)
 ```
+
+---
