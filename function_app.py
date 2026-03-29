@@ -153,7 +153,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     dataset["DXY_overnight"]  = dataset["Open_DXY"]  / dataset["Open_DXY"].shift(1)  - 1
     dataset["GOLD_overnight"] = dataset["Open_GOLD"] / dataset["Open_GOLD"].shift(1) - 1
     dataset["OIL_overnight"]  = dataset["Open_OIL"]  / dataset["Open_OIL"].shift(1)  - 1
-    
+
     # --- TARGET (categorical and balanced q1,q2,q3) ---
     dataset["Intraday_VIX_Return"] = (
         dataset["Close_VIX"] - dataset["Open_VIX"]
@@ -289,23 +289,24 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     last_150 = data_final.tail(150).copy()
 
-    last_150["VIX_Smooth"] = (last_150["Open_VIX"].rolling(30,1).mean().rolling(7,1).mean())
+    last_150["VIX_Smooth"] = last_150["Open_VIX"].ewm(span=10, adjust=False).mean()
 
-    last_150["SPX_Smooth"] = ((last_150["Open_SP500"] / last_150["Open_SP500"].shift(-1) - 1)*100).rolling(7,1).mean()
+    last_150["SPX_Return"] = (last_150["Open_SP500"] / last_150["Open_SP500"].shift(1) - 1) * 100
 
     fig, ax1 = plt.subplots(figsize=(16,5))
 
     ax1.plot(last_150.index,last_150["VIX_Smooth"],lw=2,color="blue",alpha=0.7,label="VIX")
 
     ax2 = ax1.twinx()
-    ax2.plot(last_150.index,last_150["SPX_Smooth"],lw=2,color="red",alpha=0.5,label="SPX %")
-    ax2.fill_between(last_150.index,last_150["SPX_Smooth"],0,alpha=0.1,color="red")
+    ax2.plot(last_150.index,last_150["SPX_Return"],lw=2,color="red",alpha=0.5,label="SPX %")
+    ax2.fill_between(last_150.index,last_150["SPX_Return"],0,alpha=0.1,color="red")
     ax2.axhline(0,color="gray",ls="--",lw=1)
 
     plt.title("VIX vs SPX Intra-day % (150d)")
     plt.xticks(rotation=45)
     plt.grid(axis="y",ls="--",alpha=0.3)
     plt.tight_layout()
+
 
     buf = BytesIO()
     plt.savefig(buf,format="png")
