@@ -26,92 +26,148 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     logging.info("Timer started.")
 
     # --- ETL ---
-    sp500 = yf.Ticker("^GSPC").history(period="3y")
-    vix = yf.Ticker("^VIX").history(period="3y")
-    move = yf.Ticker("^MOVE").history(period="3y")
-    vix3m = yf.Ticker("^VIX3M").history(period="3y")
-    dxy = yf.Ticker("DX-Y.NYB").history(period="3y")
-    gold = yf.Ticker("GC=F").history(period="3y")
-    oil = yf.Ticker("CL=F").history(period="3y")
-    hvyg = yf.Ticker("HYG").history(period="3y")
-    ivig = yf.Ticker("LQD").history(period="3y")
+    # --- DOWNLOAD ---
+    tickers = {
+        "SP500": "^GSPC",
+        "VIX": "^VIX",
+        "MOVE": "^MOVE",
+        "VIX3M": "^VIX3M",
+        "DXY": "DX-Y.NYB",
+        "GOLD": "GC=F",
+        "OIL": "CL=F",
+        "HYG": "HYG",
+        "LQD": "LQD"
+    }
 
-    sp500 = sp500.drop(columns=["Dividends","Stock Splits"])
-    vix = vix.drop(columns=["Dividends","Stock Splits","Volume"])
-    move = move.drop(columns=["Dividends","Stock Splits","Volume"])
-    vix3m = vix3m.drop(columns=["Dividends","Stock Splits","Volume"])
-    dxy = dxy.drop(columns=["Dividends","Stock Splits","Volume"])
-    gold = gold.drop(columns=["Dividends","Stock Splits","Volume"])
-    oil = oil.drop(columns=["Dividends","Stock Splits","Volume"])
-    hvyg = hvyg.drop(columns=["Dividends","Stock Splits","Volume"])
-    ivig = ivig.drop(columns=["Dividends","Stock Splits","Volume"])
+    data = {}
+    for name, ticker in tickers.items():
+        df = yf.Ticker(ticker).history(period="20y")
 
-    def rename_asset(df,suffix):
-        return df.rename(columns={
-            "Open":f"Open_{suffix}",
-            "High":f"High_{suffix}",
-            "Low":f"Low_{suffix}",
-            "Close":f"Close_{suffix}",
-            "Volume":f"Volume_{suffix}"
+        df = df.drop(columns=["Dividends", "Stock Splits"], errors="ignore")
+
+        if name != "SP500":
+            df = df.drop(columns=["Volume"], errors="ignore")
+
+        df = df.rename(columns={
+            "Open": f"Open_{name}",
+            "High": f"High_{name}",
+            "Low": f"Low_{name}",
+            "Close": f"Close_{name}",
+            "Volume": f"Volume_{name}"
         })
 
-    sp500 = rename_asset(sp500,"SP500")
-    vix = rename_asset(vix,"VIX")
-    move = rename_asset(move,"MOVE")
-    vix3m = rename_asset(vix3m,"VIX3M")
-    dxy = rename_asset(dxy,"DXY")
-    gold = rename_asset(gold,"GOLD")
-    oil = rename_asset(oil,"OIL")
-    hvyg = rename_asset(hvyg,"HYG")
-    ivig = rename_asset(ivig,"LQD")
-
-    for df in [sp500,vix,move,vix3m,dxy,gold,oil,hvyg,ivig]:
         df.index = df.index.tz_localize(None)
+        data[name] = df
 
-    dataset = pd.concat([sp500,vix,move,vix3m,dxy,gold,oil,hvyg,ivig],axis=1).sort_index()
+    # --- MERGE + ALIGNMENT ---
+    dataset = pd.concat(data.values(), axis=1).sort_index()
+    dataset = dataset.asfreq("B")
+    dataset = dataset.ffill()
 
-    dataset["Return_SPX"]  = dataset["Close_SP500"].pct_change(fill_method=None)
-    dataset["Return_VIX"]  = dataset["Close_VIX"].pct_change(fill_method=None)
-    dataset["Return_MOVE"] = dataset["Close_MOVE"].pct_change(fill_method=None)
-    dataset["Return_VIX3M"]= dataset["Close_VIX3M"].pct_change(fill_method=None)
-    dataset["RV_5d"] = dataset["Return_SPX"].rolling(5).std()*np.sqrt(252)
-    dataset["RV_10d"] = dataset["Return_SPX"].rolling(10).std()*np.sqrt(252)
-    dataset["RV_21d"] = dataset["Return_SPX"].rolling(21).std()*np.sqrt(252)
-    dataset["VIX_Vol_5d"] = dataset["Return_VIX"].rolling(5).std()
-    dataset["VIX_Vol_10d"] = dataset["Return_VIX"].rolling(10).std()
-    dataset["VIX_Vol_21d"] = dataset["Return_VIX"].rolling(21).std()
+    # --- SHIFTED SERIES (ANTI-LEAKAGE CORE) ---
+    close_spx = dataset["Close_SP500"].shift(1)
+    close_vix = dataset["Close_VIX"].shift(1)
+    close_move = dataset["Close_MOVE"].shift(1)
+    close_vix3m = dataset["Close_VIX3M"].shift(1)
+
+    return_spx = close_spx.pct_change()
+    return_vix = close_vix.pct_change()
+    return_move = close_move.pct_change()
+    return_vix3m = close_vix3m.pct_change()
+
+    # --- RETURNS ---
+    dataset["Return_SPX"]  = return_spx
+    dataset["Return_VIX"]  = return_vix
+    dataset["Return_MOVE"] = return_move
+    dataset["Return_VIX3M"]= return_vix3m
+
+    # --- VOL ---
+    dataset["RV_5d"]  = return_spx.rolling(5).std() * np.sqrt(252)
+    dataset["RV_10d"] = return_spx.rolling(10).std() * np.sqrt(252)
+    dataset["RV_21d"] = return_spx.rolling(21).std() * np.sqrt(252)
+
+    dataset["VIX_Vol_5d"]  = return_vix.rolling(5).std()
+    dataset["VIX_Vol_10d"] = return_vix.rolling(10).std()
+    dataset["VIX_Vol_21d"] = return_vix.rolling(21).std()
+
+    # --- LAGS ---
     dataset["VIX_Lag1"] = dataset["Close_VIX"].shift(1)
     dataset["VIX_Lag2"] = dataset["Close_VIX"].shift(2)
     dataset["VIX_Lag5"] = dataset["Close_VIX"].shift(5)
-    dataset["VIX_MA_5"] = dataset["Close_VIX"].rolling(5).mean()
-    dataset["VIX_MA_10"] = dataset["Close_VIX"].rolling(10).mean()
-    dataset["VIX_MA_20"] = dataset["Close_VIX"].rolling(20).mean()
-    dataset["VIX_STD_5"] = dataset["Close_VIX"].rolling(5).std()
-    dataset["VIX_STD_10"] = dataset["Close_VIX"].rolling(10).std()
-    dataset["VIX_Percentile"] = dataset["Close_VIX"].rank(pct=True)
-    dataset["SPX_Volume_Norm"] = dataset["Volume_SP500"]/dataset["Volume_SP500"].rolling(252).mean()
-    dataset["VIX3M_Spread"] = dataset["Close_VIX"] - dataset["Close_VIX3M"]
-    dataset["VIX_Contango"] = dataset["Close_VIX3M"]/dataset["Close_VIX"] - 1
-    dataset["SPX_Gap"] = (dataset["Open_SP500"] - dataset["Close_SP500"].shift(1))/dataset["Close_SP500"].shift(1)
-    dataset["VIX_Gap"] = (dataset["Open_VIX"] - dataset["Close_VIX"].shift(1))/dataset["Close_VIX"].shift(1)
-    dataset["Drawdown"] = dataset["Close_SP500"]/dataset["Close_SP500"].cummax() -1
-    dataset["Momentum_1M"] = dataset["Close_SP500"]/dataset["Close_SP500"].shift(21)-1
-    dataset["Momentum_3M"] = dataset["Close_SP500"]/dataset["Close_SP500"].shift(63)-1
-    dataset["Momentum_6M"] = dataset["Close_SP500"]/dataset["Close_SP500"].shift(126)-1
-    dataset["VIX_Zscore"] = (dataset["Close_VIX"]-dataset["VIX_MA_20"])/dataset["VIX_STD_10"]
-    dataset["VIX_MeanRev"] = dataset["Close_VIX"] - dataset["VIX_MA_10"]
-    dataset["IV_RV_Ratio"] = dataset["Close_VIX"]/dataset["RV_21d"]
-    dataset["VIX_RV_Spread"] = dataset["Close_VIX"] - dataset["RV_21d"]
-    dataset["VIX_Trend"] = dataset["Close_VIX"].ewm(span=21,adjust=False).mean() - dataset["Close_VIX"].ewm(span=63,adjust=False).mean()
-    dataset["VIX_MOVE_Ratio"] = dataset["Close_VIX"]/dataset["Close_MOVE"]
-    dataset["SPX_VIX_Corr_21d"] = dataset["Return_SPX"].rolling(21).corr(dataset["Return_VIX"])
-    dataset["RV_21d_Sq"] = dataset["RV_21d"]**2
-    dataset["VIX_Zscore_Sq"] = dataset["VIX_Zscore"]**2
-    dataset["Intraday_VIX_Return"] = (dataset["Close_VIX"]-dataset["Open_VIX"])/dataset["Open_VIX"]
-    q_up = dataset["Intraday_VIX_Return"].quantile(0.66)
-    q_down = dataset["Intraday_VIX_Return"].quantile(0.33)
-    dataset["Intraday_VIX_Move"] = np.where(dataset["Intraday_VIX_Return"]>=q_up,1,np.where(dataset["Intraday_VIX_Return"]<=q_down,2,0))
 
+    # --- MOVING STATS (NO LEAKAGE focused) ---
+    dataset["VIX_MA_5"]  = close_vix.rolling(5).mean()
+    dataset["VIX_MA_10"] = close_vix.rolling(10).mean()
+    dataset["VIX_MA_20"] = close_vix.rolling(20).mean()
+
+    dataset["VIX_STD_5"]  = close_vix.rolling(5).std()
+    dataset["VIX_STD_10"] = close_vix.rolling(10).std()
+    dataset["VIX_STD_20"] = close_vix.rolling(20).std()
+
+    dataset["VIX_Percentile"] = close_vix.rolling(252).apply(
+        lambda x: pd.Series(x).rank(pct=True).iloc[-1]
+    )
+
+    # --- VOLUME ---
+    dataset["SPX_Volume_Norm"] = dataset["Volume_SP500"] / (
+        dataset["Volume_SP500"].rolling(252).mean() + 1e-8
+    )
+
+    # --- STRUCTURE ---
+    dataset["VIX3M_Spread"] = close_vix - close_vix3m
+    dataset["VIX_Contango"] = close_vix3m / (close_vix + 1e-8) - 1
+
+    # --- GAPS ---
+    dataset["SPX_Gap"] = (dataset["Open_SP500"] - close_spx) / (close_spx + 1e-8)
+    dataset["VIX_Gap"] = (dataset["Open_VIX"] - close_vix) / (close_vix + 1e-8)
+
+    # --- TREND / MOMENTUM ---
+    dataset["Drawdown"] = close_spx / close_spx.cummax() - 1
+
+    dataset["Momentum_1M"] = close_spx / close_spx.shift(21) - 1
+    dataset["Momentum_3M"] = close_spx / close_spx.shift(63) - 1
+    dataset["Momentum_6M"] = close_spx / close_spx.shift(126) - 1
+
+    dataset["VIX_Zscore"] = (
+        close_vix - dataset["VIX_MA_20"]
+    ) / (dataset["VIX_STD_20"] + 1e-8)
+
+    dataset["VIX_MeanRev"] = close_vix - dataset["VIX_MA_10"]
+
+    dataset["IV_RV_Ratio"] = close_vix / (dataset["RV_21d"] + 1e-8)
+    dataset["VIX_RV_Spread"] = close_vix - dataset["RV_21d"]
+
+    dataset["VIX_Trend"] = (
+        close_vix.ewm(span=21, adjust=False).mean()
+        - close_vix.ewm(span=63, adjust=False).mean()
+    )
+
+    dataset["VIX_MOVE_Ratio"] = close_vix / (close_move + 1e-8)
+
+    dataset["SPX_VIX_Corr_21d"] = return_spx.rolling(21).corr(return_vix)
+
+    dataset["RV_21d_Sq"] = dataset["RV_21d"] ** 2
+    dataset["VIX_Zscore_Sq"] = dataset["VIX_Zscore"] ** 2
+
+    # --- MACRO FEATURES (NO LEAKAGE focus) ---
+    dataset["DXY_overnight"]  = dataset["Open_DXY"]  / dataset["Close_DXY"].shift(1)  - 1
+    dataset["GOLD_overnight"] = dataset["Open_GOLD"] / dataset["Close_GOLD"].shift(1) - 1
+    dataset["OIL_overnight"]  = dataset["Open_OIL"]  / dataset["Close_OIL"].shift(1)  - 1
+
+    # --- TARGET (categorical and balanced q1,q2,q3) ---
+    dataset["Intraday_VIX_Return"] = (
+        dataset["Close_VIX"] - dataset["Open_VIX"]
+    ) / (dataset["Open_VIX"] + 1e-8)
+
+    dataset["q_up"] = dataset["Intraday_VIX_Return"].shift(1).rolling(252).quantile(0.66)
+    dataset["q_down"] = dataset["Intraday_VIX_Return"].shift(1).rolling(252).quantile(0.33)
+
+    dataset["Intraday_VIX_Move"] = np.where(
+        dataset["Intraday_VIX_Return"] >= dataset["q_up"], 1,
+        np.where(dataset["Intraday_VIX_Return"] <= dataset["q_down"], 2, 0)
+    )
+
+    # --- FEATURES ---
     feature_cols = [
         "Open_SP500","Open_VIX","Open_MOVE",
         "Drawdown",
@@ -127,11 +183,12 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         "VIX_Zscore","VIX_Zscore_Sq","VIX_MeanRev",
         "IV_RV_Ratio","VIX_RV_Spread","VIX_Trend",
         "VIX_MOVE_Ratio","SPX_VIX_Corr_21d","RV_21d_Sq",
-        "Close_DXY","Close_GOLD","Close_OIL",
-        "Close_HYG","Close_LQD"
+        "Open_DXY","Open_GOLD","Open_OIL",
+        "Open_HYG","Open_LQD",
+        "DXY_overnight","GOLD_overnight","OIL_overnight"
     ]
 
-    data_final = dataset[feature_cols + ["Intraday_VIX_Move"]]
+    data_final = dataset[feature_cols + ["Intraday_VIX_Move"]].dropna()
 
     # --- MongoDB ---
     mongo_uri = os.environ.get("mongo_uri")
@@ -171,7 +228,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         if isinstance(last_info_dict[k], (int, float)) and isinstance(prev_info_dict[k], (int, float)):
             diff = last_info_dict[k] - prev_info_dict[k]
             if k in pp_metrics:
-                diff *= 100  # convertimos a puntos porcentuales
+                diff *= 100  # transform to percentage points
                 technical_dict[k] = f"{diff:+.2f} p.p."
             else:
                 technical_dict[k] = f"{diff:+.2f}"
@@ -182,7 +239,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     value_str_dict = {}
     for k, v in last_info_dict.items():
         if k in pp_metrics:
-            value_str_dict[k] = f"{v*100:.2f}%"  # convertimos a porcentaje
+            value_str_dict[k] = f"{v*100:.2f}%"  # transform to percentage points
         else:
             value_str_dict[k] = f"{v:.2f}"
             
@@ -203,27 +260,6 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     # Send to Discord
     webhook = os.environ.get("webhook")
-
-    selected_features = [
-    "Open_SP500",
-    "Open_VIX",
-    "Drawdown",
-    "Momentum_1M",
-    "Momentum_3M",
-    "RV_5d",
-    "RV_21d",
-    "VIX_Vol_5d",
-    "VIX_Vol_21d",
-    "VIX_Lag1",
-    "VIX_MA_20",
-    "VIX_STD_10",
-    "VIX_Percentile",
-    "VIX3M_Spread",
-    "VIX_Contango",
-    "SPX_VIX_Corr_21d",
-    "Close_DXY",
-    "Close_GOLD",
-    "Close_OIL"]
     
     last, prev = data_final.iloc[-1], data_final.iloc[-6]
 
@@ -233,7 +269,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     pp = {"Drawdown","Momentum_1M","Momentum_3M","RV_5d","RV_21d","VIX_Vol_5d","VIX_Vol_21d"}
 
     rows = []
-    for k in selected_features:
+    for k in feature_cols:
         if k in last.index and isinstance(last[k], (int,float)):
             name = k
             val = f"{last[k]*100:.2f}%" if k in pp else f"{last[k]:.2f}"
