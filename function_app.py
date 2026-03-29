@@ -150,10 +150,10 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     dataset["VIX_Zscore_Sq"] = dataset["VIX_Zscore"] ** 2
 
     # --- MACRO FEATURES (NO LEAKAGE focus) ---
-    dataset["DXY_overnight"]  = dataset["Open_DXY"]  / dataset["Close_DXY"].shift(1)  - 1
-    dataset["GOLD_overnight"] = dataset["Open_GOLD"] / dataset["Close_GOLD"].shift(1) - 1
-    dataset["OIL_overnight"]  = dataset["Open_OIL"]  / dataset["Close_OIL"].shift(1)  - 1
-
+    dataset["DXY_overnight"]  = dataset["Open_DXY"]  / dataset["Open_DXY"].shift(1)  - 1
+    dataset["GOLD_overnight"] = dataset["Open_GOLD"] / dataset["Open_GOLD"].shift(1) - 1
+    dataset["OIL_overnight"]  = dataset["Open_OIL"]  / dataset["Open_OIL"].shift(1)  - 1
+    
     # --- TARGET (categorical and balanced q1,q2,q3) ---
     dataset["Intraday_VIX_Return"] = (
         dataset["Close_VIX"] - dataset["Open_VIX"]
