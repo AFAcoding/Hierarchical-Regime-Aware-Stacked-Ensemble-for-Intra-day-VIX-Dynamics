@@ -1,4 +1,4 @@
-# Regime Aware Hierarchical Modeling for Intra-day VIX-Dynamics
+# Regime Aware Hierarchical Modeling for Intra-day VIX Dynamics
 
 **Author:** Aleix Francia Albert  
 **Project:** MSc Thesis – Open Source Release  
