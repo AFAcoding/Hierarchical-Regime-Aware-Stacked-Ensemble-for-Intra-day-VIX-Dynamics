@@ -1,4 +1,4 @@
-# Stacked Multi-Model Ensemble for Intraday VIX Prediction with Regime Awareness
+# Regime Aware Hierarchical Modeling for Intra-day VIX-Dynamics
 
 **Author:** Aleix Francia Albert  
 **Project:** MSc Thesis – Open Source Release  
