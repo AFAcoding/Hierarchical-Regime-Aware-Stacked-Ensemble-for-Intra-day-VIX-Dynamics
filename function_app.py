@@ -3,7 +3,6 @@ import os
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import certifi
 import azure.functions as func
 import requests
 from io import BytesIO
@@ -35,7 +34,12 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     data = {}
     for name, ticker in tickers.items():
         df = yf.Ticker(ticker).history(period="20y")
-        df = df.rename(columns={"Close": f"Close_{name}", "Open": f"Open_{name}"})
+
+        df = df.rename(columns={
+            "Open": f"Open_{name}",
+            "Close": f"Close_{name}",
+        })
+
         df.index = df.index.tz_localize(None)
         data[name] = df
 
@@ -46,6 +50,8 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     # -------------------------
     close_spx = dataset["Close_SP500"].shift(1)
     close_vix = dataset["Close_VIX"].shift(1)
+
+    dataset["VIX_Lag1"] = dataset["Close_VIX"].shift(1)
 
     dataset["RV_21d"] = close_spx.pct_change().rolling(21).std() * np.sqrt(252)
 
@@ -68,7 +74,13 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         np.where(dataset["Intraday_VIX_Return"] <= dataset["q_down"], 2, 0)
     )
 
-    feature_cols = ["Open_SP500", "Open_VIX", "VIX_Zscore", "RV_21d"]
+    feature_cols = [
+        "Open_SP500",
+        "Open_VIX",
+        "VIX_Lag1",
+        "RV_21d",
+        "VIX_Zscore"
+    ]
 
     data_final = dataset[feature_cols + ["Intraday_VIX_Move", "q_up", "q_down"]].dropna()
 
@@ -78,7 +90,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     X = data_final[feature_cols].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
     y = data_final["Intraday_VIX_Move"]
 
-    model = LogisticRegression(C=75, max_iter=2000)
+    model = LogisticRegression(C=75, max_iter=6000)
     model.fit(X, y)
 
     preds = model.predict(X)
@@ -86,22 +98,50 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     prediction = pd.DataFrame({
         "pred_class": preds,
-        "p0": probs[:, 0],
-        "p1": probs[:, 1],
-        "p2": probs[:, 2],
+        "proba_class_0": probs[:, 0],
+        "proba_class_1": probs[:, 1],
+        "proba_class_2": probs[:, 2],
     }, index=data_final.index)
 
     # -------------------------
-    # LAST ROW
+    # DISCORD OUTPUT
     # -------------------------
-    last = prediction.tail(1).iloc[0]
-    prev = prediction.tail(6).head(1).iloc[0]
+    webhook = os.environ.get("webhook")
+
+    last_row = prediction.iloc[-1]
+    last = data_final.iloc[-1]
+    prev = data_final.iloc[-6]
 
     last_date = data_final.index[-1].strftime("%Y-%m-%d")
     prev_date = data_final.index[-6].strftime("%Y-%m-%d")
 
     # -------------------------
-    # QUANTILES
+    # TABLE COMPARISON
+    # -------------------------
+    pp = {"RV_21d"}
+
+    rows = []
+    for k in feature_cols:
+        if k in last.index:
+            val = f"{last[k]*100:.2f}%" if k in pp else f"{last[k]:.2f}"
+            diff = last[k] - prev[k]
+            chg = f"{diff*100:+.2f}pp" if k in pp else f"{diff:+.2f}"
+            emo = "🟢" if diff > 0 else "🔴" if diff < 0 else "⚪"
+            rows.append((k, val, emo, chg))
+
+    w1 = max(len(r[0]) for r in rows)
+    w2 = max(len(r[1]) for r in rows)
+    w4 = max(len(r[3]) for r in rows)
+
+    table = "\n".join(
+        f"{k:<{w1}} {v:>{w2}} {e}{c:>{w4}}"
+        for k, v, e, c in rows
+    )
+
+    title = f"Market Snapshot {last_date} (Δ vs {prev_date})"
+
+    # -------------------------
+    # QUANTILES + PROB
     # -------------------------
     q_down = data_final["q_down"].iloc[-1]
     q_up = data_final["q_up"].iloc[-1]
@@ -114,53 +154,14 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     low, high = sorted([q_down, q_up])
 
-    # -------------------------
-    # TABLE COMPARISON
-    # -------------------------
-    rows = [
-        ("Pred", last["pred_class"], prev["pred_class"]),
-        ("Prob Down", f"{last['p0']:.2%}", f"{prev['p0']:.2%}"),
-        ("Prob Neutral", f"{last['p1']:.2%}", f"{prev['p1']:.2%}"),
-        ("Prob Up", f"{last['p2']:.2%}", f"{prev['p2']:.2%}")
-    ]
-
-    table = "\n".join(
-        f"{k:<15} {v:>10}  |  Δ prev: {p}"
-        for k, v, p in rows
-    )
-
-    # -------------------------
-    # CHART
-    # -------------------------
-    last_150 = data_final.tail(150)
-
-    fig, ax1 = plt.subplots(figsize=(12, 4))
-
-    ax1.plot(last_150.index, dataset["Close_VIX"].loc[last_150.index], label="VIX")
-    ax2 = ax1.twinx()
-    ax2.plot(last_150.index, dataset["Close_SP500"].loc[last_150.index], color="red", label="SPX")
-
-    plt.title("VIX vs SPX (150D)")
-    plt.tight_layout()
-
-    buf = BytesIO()
-    plt.savefig(buf, format="png")
-    buf.seek(0)
-    plt.close(fig)
-
-    # -------------------------
-    # OUTPUT TEXT
-    # -------------------------
     proba_text = f"""
 *Model Output*
 ------------------------
-Decrease VIX Prob: {last['p0']:.2%}
-Neutral VIX Prob: {last['p1']:.2%}
-Increase VIX Prob: {last['p2']:.2%}
+Decrease VIX Prob: {last_row['proba_class_0']:.2%}
+Neutral VIX Prob: {last_row['proba_class_1']:.2%}
+Increase VIX Prob: {last_row['proba_class_2']:.2%}
 
-Confidence: {max(last['p0'], last['p1'], last['p2']):.2%}
-
-Note:
+Quantiles:
 Downside Move → <{round(100*low,2)}%
 Neutral Move  → {round(100*low,2)}% to {round(100*high,2)}%
 Upside Move   → >{round(100*high,2)}%
@@ -168,21 +169,38 @@ Upside Move   → >{round(100*high,2)}%
 {note}
 """
 
-    msg = f"""
-**Market Snapshot {last_date} (vs {prev_date})**
-
-{table}
-"""
-
     # -------------------------
-    # DISCORD
+    # CHART
     # -------------------------
-    webhook = os.environ.get("webhook")
+    last_150 = data_final.tail(150).copy()
+
+    last_150["VIX_Smooth"] = last_150["Open_VIX"].ewm(span=10).mean()
+    last_150["SPX_Return"] = last_150["Open_SP500"].pct_change() * 100
+
+    fig, ax1 = plt.subplots(figsize=(14, 5))
+
+    ax1.plot(last_150.index, last_150["VIX_Smooth"], label="VIX", color="blue")
+    ax2 = ax1.twinx()
+
+    ax2.plot(last_150.index, last_150["SPX_Return"], label="SPX %", color="red", alpha=0.6)
+    ax2.axhline(0, color="gray", linestyle="--", linewidth=1)
+
+    plt.title("VIX vs SPX (150D)")
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+
+    msg = f"**{title}**\n```\n{table}\n```"
 
     requests.post(
         webhook,
         data={"content": msg + "\n\n" + proba_text},
         files={"file": ("chart.png", buf, "image/png")}
     )
+
+    buf.close()
+    plt.close(fig)
 
     logging.info("Done.")
