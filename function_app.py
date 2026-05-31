@@ -33,6 +33,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     logging.info("Timer started.")
 
     # --- ETL ---
+    
     # --- Download data from yfinance ---
     tickers = {
         "SP500": "^GSPC",
@@ -102,7 +103,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     dataset["VIX_Lag2"] = dataset["Close_VIX"].shift(2)
     dataset["VIX_Lag5"] = dataset["Close_VIX"].shift(5)
 
-    # --- MOVING STATS (NO LEAKAGE focused) ---
+    # --- MOVING STATS ---
     dataset["VIX_MA_5"]  = close_vix.rolling(5).mean()
     dataset["VIX_MA_10"] = close_vix.rolling(10).mean()
     dataset["VIX_MA_20"] = close_vix.rolling(20).mean()
@@ -156,7 +157,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     dataset["RV_21d_Sq"] = dataset["RV_21d"] ** 2
     dataset["VIX_Zscore_Sq"] = dataset["VIX_Zscore"] ** 2
 
-    # --- MACRO FEATURES (NO LEAKAGE focus) ---
+    # --- MACRO FEATURES ---
     dataset["DXY_overnight"]  = dataset["Open_DXY"]  / dataset["Open_DXY"].shift(1)  - 1
     dataset["GOLD_overnight"] = dataset["Open_GOLD"] / dataset["Open_GOLD"].shift(1) - 1
     dataset["OIL_overnight"]  = dataset["Open_OIL"]  / dataset["Open_OIL"].shift(1)  - 1
@@ -194,7 +195,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         "Open_HYG","Open_LQD",
         "DXY_overnight","GOLD_overnight","OIL_overnight"
     ]
-    # --- Features Used Output ---
+    # --- Features Used in Output ---
     output_feature_cols = [
         "Open_VIX",
         "Open_SP500",
@@ -221,7 +222,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     records = data_mongo.to_dict("records")
 
     operations = [
-        UpdateOne({"_id": r["_id"]}, {"$setOnInsert": r}, upsert=True)
+        UpdateOne({"_id": r["_id"]}, {"$setOnInsert": r}, upsert=True) # Insert new daily records in MongoDB No-SQL database
         for r in records
     ]
     if operations:
@@ -281,7 +282,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
             columns=[f"PC{i+1}" for i in range(14)]
         )
 
-        # 3. HMM 
+        # 3. VHMM 
         scaler_hmm = StandardScaler()
 
         X_train_hmm_scaled = scaler_hmm.fit_transform(X_train_pca[hmm_cols])
@@ -299,7 +300,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         train_probs = hmm.predict_proba(X_train_hmm_scaled)
         test_probs = hmm.predict_proba(X_test_hmm_scaled)
 
-        # 4. ADD HMM FEATURES
+        # 4. ADD VARIATIONAL HMM FEATURES to ml input dataset
         X_train_final = X_train_pca.copy()
         X_test_final = X_test_pca.copy()
 
@@ -411,7 +412,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     pp = {"Drawdown","Momentum_1M","Momentum_3M","RV_5d","RV_21d","VIX_Vol_5d","VIX_Vol_21d"}
 
     rows = []
-    for k in output_feature_cols:
+    for k in output_feature_cols: # Just the most informative selected features
         if k in last.index and isinstance(last[k], (int,float)):
             name = k
             val = f"{last[k]*100:.2f}%" if k in pp else f"{last[k]:.2f}"
@@ -477,7 +478,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     # --- Save buffer
     buf = BytesIO()
-    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight") # Format required by the output api
     buf.seek(0)
 
     msg = f"**{title}**\n```\n{table}\n```\n\n{proba_text}"
@@ -544,8 +545,6 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     <p>{note}</p>
     """
-
-    # importante por si Discord consumió el stream
     buf.seek(0)
 
     chart_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -553,7 +552,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     try:
 
         email_response = resend.Emails.send({
-            "from": "Market Bot <onboarding@resend.dev>",
+            "from": "VIX Market Bot <onboarding@resend.dev>",
             "to": ["afranciaa2501@gmail.com"],
             "subject": title,
             "html": html_body,
