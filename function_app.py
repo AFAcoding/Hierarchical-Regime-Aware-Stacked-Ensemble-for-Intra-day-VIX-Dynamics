@@ -1,20 +1,27 @@
 import logging
-import resend
 import os
+import datetime
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from pymongo import MongoClient, UpdateOne
+import certifi
 import azure.functions as func
 import requests
 from io import BytesIO
-import base64
 import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from hmmlearn.vhmm import VariationalGaussianHMM
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+import resend
+import base64
 
 app = func.FunctionApp()
 
 @app.timer_trigger(
-    schedule="0 35 9 * * 1-5",
+    schedule="0 40 9 * * 1-5",  # Monday to Friday 9:40 AM ET - Open Market
     arg_name="myTimer",
     run_on_startup=False,
     use_monitor=True
@@ -25,9 +32,8 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     logging.info("Timer started.")
 
-    # -------------------------
-    # DATA
-    # -------------------------
+    # --- ETL ---
+    # --- Download data from yfinance ---
     tickers = {
         "SP500": "^GSPC",
         "VIX": "^VIX",
@@ -168,7 +174,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         np.where(dataset["Intraday_VIX_Return"] <= dataset["q_down"], 2, 0)
     )
 
-    # --- FEATURES ---
+    # --- Features Used in ETL + Model ---
     feature_cols = [
         "Open_SP500","Open_VIX","Open_MOVE",
         "Drawdown",
@@ -188,91 +194,241 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         "Open_HYG","Open_LQD",
         "DXY_overnight","GOLD_overnight","OIL_overnight"
     ]
+    # --- Features Used Output ---
+    output_feature_cols = [
+        "Open_VIX",
+        "Open_SP500",
+        "Open_MOVE",
+        "Momentum_3M",
+        "RV_21d",
+        "VIX_Percentile",
+        "VIX_Contango",
+        "VIX_Zscore",
+        "IV_RV_Ratio",
+        "SPX_VIX_Corr_21d"
+    ]
 
-    data_final = dataset[feature_cols + ["Intraday_VIX_Move", "q_up", "q_down"]].dropna()
+    data_final = dataset[feature_cols + ["Intraday_VIX_Move"]].dropna()
 
-    # -------------------------
-    # MODEL
-    # -------------------------
-    X = data_final[feature_cols].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
-    y = data_final["Intraday_VIX_Move"]
+    # --- MongoDB ---
+    mongo_uri = os.environ.get("mongo_uri")
+    client = MongoClient(mongo_uri, tls=True, tlsCAFile=certifi.where())
+    db = client["DB_VIX"]
+    collection = db["vix_data"]
 
-    model = LogisticRegression(C=75, max_iter=6000)
-    model.fit(X, y)
+    data_mongo = data_final.copy()
+    data_mongo["_id"] = data_mongo.index.astype(str)
+    records = data_mongo.to_dict("records")
 
-    preds = model.predict(X)
-    probs = model.predict_proba(X)
+    operations = [
+        UpdateOne({"_id": r["_id"]}, {"$setOnInsert": r}, upsert=True)
+        for r in records
+    ]
+    if operations:
+        result = collection.bulk_write(operations)
+        logging.info(f"New records inserted: {result.upserted_count}")
+    else:
+        logging.info("No new data to insert.")
 
-    prediction = pd.DataFrame({
-        "pred_class": preds,
-        "proba_class_0": probs[:, 0],
-        "proba_class_1": probs[:, 1],
-        "proba_class_2": probs[:, 2],
-    }, index=data_final.index)
+    logging.info("Timer finished.")
+    
+    # Model Development
+    
+    def clean_features(X): # Handle missing values and infinite values.
+        X = X.replace([np.inf, -np.inf], np.nan)
+        X = X.ffill().fillna(0)
+        return X.astype(np.float64)
 
-    #---------------OUTPUT---------------
-    webhook = os.environ.get("webhook")
+    def build_pipeline_pca(n_components=14): # PCA preprocessing pipeline with scaling and cleaning.
+        return Pipeline([
+            ("clean", FunctionTransformer(clean_features)),
+            ("scaler", StandardScaler()),
+            ("pca", PCA(n_components=n_components))
+        ])
 
+    def backtesting_prod(model,data):
+
+        pred_real = pd.DataFrame()
+
+        hmm_cols = ["PC1", "PC2", "PC3"]
+
+        # 1. FINAL HOLDOUT SPLIT
+        test_size = 1
+        test_start = len(data) - test_size
+
+        X = clean_features(data.drop(columns=["Intraday_VIX_Move"]))
+        y = data["Intraday_VIX_Move"].astype(float)
+
+        X_train_full = X.iloc[:test_start]
+        y_train_full = y.iloc[:test_start]
+
+        X_test = X.iloc[test_start:]
+        y_test = y.iloc[test_start:]
+
+        # 2. PCA 
+        pca_pipeline = build_pipeline_pca(n_components=14)
+        pca_pipeline.fit(X_train_full)
+
+        X_train_pca = pd.DataFrame(
+            pca_pipeline.transform(X_train_full),
+            index=X_train_full.index,
+            columns=[f"PC{i+1}" for i in range(14)]
+        )
+
+        X_test_pca = pd.DataFrame(
+            pca_pipeline.transform(X_test),
+            index=X_test.index,
+            columns=[f"PC{i+1}" for i in range(14)]
+        )
+
+        # 3. HMM 
+        scaler_hmm = StandardScaler()
+
+        X_train_hmm_scaled = scaler_hmm.fit_transform(X_train_pca[hmm_cols])
+        X_test_hmm_scaled = scaler_hmm.transform(X_test_pca[hmm_cols])
+
+        hmm = VariationalGaussianHMM(
+            n_components=3,
+            covariance_type="full",
+            n_iter=1400,
+            random_state=42
+        )
+
+        hmm.fit(X_train_hmm_scaled)
+
+        train_probs = hmm.predict_proba(X_train_hmm_scaled)
+        test_probs = hmm.predict_proba(X_test_hmm_scaled)
+
+        # 4. ADD HMM FEATURES
+        X_train_final = X_train_pca.copy()
+        X_test_final = X_test_pca.copy()
+
+        for s in range(train_probs.shape[1]):
+            X_train_final[f"hmm_state_{s}"] = train_probs[:, s]
+            X_test_final[f"hmm_state_{s}"] = test_probs[:, s]
+
+        # 5. MODEL
+
+        model.fit(X_train_final, y_train_full.values.ravel())
+
+        # 6. PREDICTION
+        preds = model.predict(X_test_final).ravel()
+        probs = model.predict_proba(X_test_final)
+
+        # 7. RESULTS
+        pred_real = pd.DataFrame({
+            "pred_class": preds,
+            "real_class": y_test.values.ravel(),
+            "residual_class": y_test.values.ravel() - preds,
+            "test_regime": hmm.predict(X_test_hmm_scaled),
+            "proba_class_0": probs[:, 0],
+            "proba_class_1": probs[:, 1],
+            "proba_class_2": probs[:, 2],
+        }, index=y_test.index)
+
+        return pred_real
+    
+    model= LogisticRegression(C=75, max_iter=6000)
+    
+    prediction = backtesting_prod(model=model, data=data_final)
+    
+    prediction["Prediction"] = np.where(prediction["pred_class"] == 0, "Bearish", np.where(prediction["pred_class"] == 1, "Neutral", "Bullish"))
+    
+    # Model probabilities
     last_row = prediction.iloc[-1]
-    last = data_final.iloc[-1]
-    prev = data_final.iloc[-6]
+    
+    #---------------------------OUTPUT-----------------------------
+    
+    # Send last info to Discord
+    last_info_dict = data_final.iloc[-1].to_dict()
+
+    # Data 5 days ago
+    prev_info_dict = data_final.iloc[-6].to_dict()
+
+    # Metrics we want to show as percentage points
+    pp_metrics = ["Drawdown", "Momentum_1M", "Momentum_3M", "Momentum_6M",
+                "RV_5d", "RV_10d", "RV_21d", "VIX_Vol_5d", "VIX_Vol_21d"]
+
+    # Construct technical column
+    technical_dict = {}
+    for k in last_info_dict.keys():
+        if isinstance(last_info_dict[k], (int, float)) and isinstance(prev_info_dict[k], (int, float)):
+            diff = last_info_dict[k] - prev_info_dict[k]
+            if k in pp_metrics:
+                diff *= 100  # transform to percentage points
+                technical_dict[k] = f"{diff:+.2f} p.p."
+            else:
+                technical_dict[k] = f"{diff:+.2f}"
+        else:
+            technical_dict[k] = "-"
+
+    # Values 
+    value_str_dict = {}
+    for k, v in last_info_dict.items():
+        if k in pp_metrics:
+            value_str_dict[k] = f"{v*100:.2f}%"  # transform to percentage points
+        else:
+            value_str_dict[k] = f"{v:.2f}"
+            
+    col_width = max(len(k) for k in last_info_dict.keys())
+    val_width = max(len(v) for v in value_str_dict.values())
+    tech_width = max(len(v) for v in technical_dict.values())
+    tech_width = max(tech_width, len("Change(5d)"))
+
+    table_header = f"| {'Feature'.ljust(col_width)} | {'Value'.rjust(val_width)} | {'Change(5d)'.rjust(tech_width)} |"
+    table_divider = f"|{'-'*(col_width+2)}|{'-'*(val_width+2)}|{'-'*(tech_width+2)}|"
+
+    table_rows = "\n".join([
+        f"| {k.ljust(col_width)} | {value_str_dict[k].rjust(val_width)} | {technical_dict[k].rjust(tech_width)} |"
+        for k in last_info_dict.keys()
+    ])
+
+    last_info_str = f"```\n{table_header}\n{table_divider}\n{table_rows}\n```"
+
+    proba_text = f"""
+    *Model Output*
+    ------------------------
+    Prediction: {last_row['Prediction']} (Confidence: {max(last_row['proba_class_0'], last_row['proba_class_1'], last_row['proba_class_2']):.0%})
+
+    Decrease VIX Prob: {last_row['proba_class_0']:.1%}
+    Neutral VIX Prob: {last_row['proba_class_1']:.1%}
+    Increase VIX Prob: {last_row['proba_class_2']:.1%}
+    
+    Note: 
+        Downside Move → < {round(100*dataset['q_down'].iloc[-1],1)}%
+        Neutral Move  → {round(100*dataset['q_down'].iloc[-1],1)}% to {round(100*dataset['q_up'].iloc[-1],1)}%
+        Upside Move   → > {round(100*dataset['q_up'].iloc[-1],1)}% 
+    """
+
+    # Send to Discord
+    webhook = os.environ.get("webhook")
+    
+    last, prev = data_final.iloc[-1], data_final.iloc[-6]
 
     last_date = data_final.index[-1].strftime("%Y-%m-%d")
     prev_date = data_final.index[-6].strftime("%Y-%m-%d")
 
-    # TABLE COMPARISON
-
-    pp = {"RV_21d"}
+    pp = {"Drawdown","Momentum_1M","Momentum_3M","RV_5d","RV_21d","VIX_Vol_5d","VIX_Vol_21d"}
 
     rows = []
-    for k in feature_cols:
-        if k in last.index:
+    for k in output_feature_cols:
+        if k in last.index and isinstance(last[k], (int,float)):
+            name = k
             val = f"{last[k]*100:.2f}%" if k in pp else f"{last[k]:.2f}"
             diff = last[k] - prev[k]
             chg = f"{diff*100:+.2f}pp" if k in pp else f"{diff:+.2f}"
-            emo = "🟢" if diff > 0 else "🔴" if diff < 0 else "⚪"
-            rows.append((k, val, emo, chg))
+            emo = "🟢" if diff>0 else "🔴" if diff<0 else "⚪"
+            rows.append((name,val,emo,chg))
 
     w1 = max(len(r[0]) for r in rows)
     w2 = max(len(r[1]) for r in rows)
     w4 = max(len(r[3]) for r in rows)
 
-    table = "\n".join(
-        f"{k:<{w1}} {v:>{w2}} {e}{c:>{w4}}"
-        for k, v, e, c in rows
-    )
+    table = "\n".join(f"{k:<{w1}} {v:>{w2}} {e}{c:>{w4}}" for k,v,e,c in rows)
+    title = f"Market Snapshot {last_date}  (Δ vs {prev_date})"
 
-    title = f"Market Snapshot {last_date} (Δ vs {prev_date})"
+    # -------- CHART --------
 
-    # QUANTILES + PROB
-
-    q_down = data_final["q_down"].iloc[-1]
-    q_up = data_final["q_up"].iloc[-1]
-
-    if np.isnan(q_down) or np.isnan(q_up):
-        note = "Quantiles not ready"
-        q_down, q_up = 0.0, 0.0
-    else:
-        note = ""
-
-    low, high = sorted([q_down, q_up])
-
-    proba_text = f"""
-    Model Output
-    ------------------------
-    Decrease VIX Prob: {last_row['proba_class_0']:.2%}
-    Neutral VIX Prob: {last_row['proba_class_1']:.2%}
-    Increase VIX Prob: {last_row['proba_class_2']:.2%}
-
-    Quantiles:
-    Downside Move → <{round(100*low,2)}%
-    Neutral Move  → {round(100*low,2)}% to {round(100*high,2)}%
-    Upside Move   → >{round(100*high,2)}%
-
-    {note}
-    """
-
-    # CHART
     last_150 = data_final.tail(150).copy()
 
     # Smoothing + returns
@@ -324,20 +480,27 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     buf.seek(0)
 
-    # DISCORD MESSAGE
-
-    msg = f"**{title}**\n```\n{table}\n```"
+    msg = f"**{title}**\n```\n{table}\n```\n\n{proba_text}"
 
     requests.post(
         webhook,
-        data={"content": msg + "\n\n" + proba_text},
+        data={"content": msg + "\n\n"},
         files={"file": ("chart.png", buf, "image/png")}
     )
-
+    
     # EMAIL (RESEND)
 
     resend.api_key = os.environ["RESEND_API_KEY"]
-    
+
+    low = dataset["q_down"].iloc[-1]
+    high = dataset["q_up"].iloc[-1]
+
+    note = f"""
+    Downside Move → < {round(100*low,1)}%
+    Neutral Move → {round(100*low,1)}% to {round(100*high,1)}%
+    Upside Move → > {round(100*high,1)}%
+    """
+
     html_table = """
     <table style="border-collapse: collapse; font-family: monospace; font-size: 12px;">
     """
@@ -347,9 +510,9 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         <tr>
             <td style="padding:4px 10px; text-align:left;">{k}</td>
             <td style="padding:4px 10px; text-align:right;">{v}</td>
-            <td style="padding:4px 10px; text-align:left;">{e}{c}</td>
+            <td style="padding:4px 10px; text-align:left;">{e} {c}</td>
         </tr>
-    """
+        """
 
     html_table += "</table>"
 
@@ -358,41 +521,55 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
 
     {html_table}
 
+    <hr>
+
     <h3>Model Output</h3>
 
     <ul>
+        <li><b>Prediction:</b> {last_row['Prediction']}</li>
         <li><b>Decrease VIX Prob:</b> {last_row['proba_class_0']:.2%}</li>
         <li><b>Neutral VIX Prob:</b> {last_row['proba_class_1']:.2%}</li>
         <li><b>Increase VIX Prob:</b> {last_row['proba_class_2']:.2%}</li>
     </ul>
 
-    <h3>Quantiles</h3>
+    <hr>
+
+    <h3>Move Classification Thresholds</h3>
 
     <ul>
-        <li>Downside Move → &lt;{round(100*low,2)}%</li>
-        <li>Neutral Move → {round(100*low,2)}% to {round(100*high,2)}%</li>
-        <li>Upside Move → &gt;{round(100*high,2)}%</li>
+        <li><b>Downside Move:</b> &lt; {100*low:.2f}%</li>
+        <li><b>Neutral Move:</b> {100*low:.2f}% to {100*high:.2f}%</li>
+        <li><b>Upside Move:</b> &gt; {100*high:.2f}%</li>
     </ul>
 
     <p>{note}</p>
     """
 
+    # importante por si Discord consumió el stream
+    buf.seek(0)
+
     chart_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    email_response = resend.Emails.send({
-        "from": "Market Bot <onboarding@resend.dev>",
-        "to": ["afranciaa2501@gmail.com"],
-        "subject": title,
-        "html": html_body,
-        "attachments": [
-            {
-                "filename": "vix_spx_chart.png",
-                "content": chart_base64
-            }
-        ]
-    })
+    try:
 
-    print(email_response)
+        email_response = resend.Emails.send({
+            "from": "Market Bot <onboarding@resend.dev>",
+            "to": ["afranciaa2501@gmail.com"],
+            "subject": title,
+            "html": html_body,
+            "attachments": [
+                {
+                    "filename": "vix_spx_chart.png",
+                    "content": chart_base64,
+                    "content_type": "image/png"
+                }
+            ]
+        })
+
+        logging.info(f"Email sent successfully: {email_response}")
+
+    except Exception as e:
+        logging.exception(f"EMAIL ERROR: {str(e)}")
 
     buf.close()
     plt.close(fig)
