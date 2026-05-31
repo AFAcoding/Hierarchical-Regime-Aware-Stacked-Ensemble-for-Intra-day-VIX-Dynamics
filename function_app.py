@@ -518,7 +518,6 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     html_table += "</table>"
 
     html_body = f"""
-    <h2>{title}</h2>
 
     {html_table}
 
@@ -543,7 +542,6 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         <li><b>Upside Move:</b> &gt; {100*high:.2f}%</li>
     </ul>
 
-    <p>{note}</p>
     """
     buf.seek(0)
 
