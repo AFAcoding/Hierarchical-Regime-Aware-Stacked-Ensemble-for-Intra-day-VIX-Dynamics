@@ -21,7 +21,7 @@ import base64
 app = func.FunctionApp()
 
 @app.timer_trigger(
-    schedule="0 40 9 * * 1-5",  # Monday to Friday 9:40 AM ET
+    schedule="0 40 9 * * 1-5",  # Monday to Friday 9:40 AM ET - Open Market
     arg_name="myTimer",
     run_on_startup=False,
     use_monitor=True
@@ -33,7 +33,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     logging.info("Timer started.")
 
     # --- ETL ---
-    # --- DOWNLOAD ---
+    # --- Download data from yfinance ---
     tickers = {
         "SP500": "^GSPC",
         "VIX": "^VIX",
@@ -174,7 +174,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         np.where(dataset["Intraday_VIX_Return"] <= dataset["q_down"], 2, 0)
     )
 
-    # --- FEATURES ---
+    # --- Features Used in ETL + Model ---
     feature_cols = [
         "Open_SP500","Open_VIX","Open_MOVE",
         "Drawdown",
@@ -193,6 +193,19 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         "Open_DXY","Open_GOLD","Open_OIL",
         "Open_HYG","Open_LQD",
         "DXY_overnight","GOLD_overnight","OIL_overnight"
+    ]
+    # --- Features Used Output ---
+    output_feature_cols = [
+        "Open_VIX",
+        "Open_SP500",
+        "Open_MOVE",
+        "Momentum_3M",
+        "RV_21d",
+        "VIX_Percentile",
+        "VIX_Contango",
+        "VIX_Zscore",
+        "IV_RV_Ratio",
+        "SPX_VIX_Corr_21d"
     ]
 
     data_final = dataset[feature_cols + ["Intraday_VIX_Move"]].dropna()
@@ -252,7 +265,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
         X_test = X.iloc[test_start:]
         y_test = y.iloc[test_start:]
 
-        # 2. PCA (FIT ON TRAIN ONLY)
+        # 2. PCA 
         pca_pipeline = build_pipeline_pca(n_components=14)
         pca_pipeline.fit(X_train_full)
 
@@ -268,7 +281,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
             columns=[f"PC{i+1}" for i in range(14)]
         )
 
-        # 3. HMM (FIT ON TRAIN ONLY)
+        # 3. HMM 
         scaler_hmm = StandardScaler()
 
         X_train_hmm_scaled = scaler_hmm.fit_transform(X_train_pca[hmm_cols])
@@ -294,11 +307,11 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
             X_train_final[f"hmm_state_{s}"] = train_probs[:, s]
             X_test_final[f"hmm_state_{s}"] = test_probs[:, s]
 
-        # 5. MODEL (PRODUCTION TRAIN)
+        # 5. MODEL
 
         model.fit(X_train_final, y_train_full.values.ravel())
 
-        # 6. PREDICTION (HOLDOUT TEST)
+        # 6. PREDICTION
         preds = model.predict(X_test_final).ravel()
         probs = model.predict_proba(X_test_final)
 
@@ -398,7 +411,7 @@ def timer_trigger_dbvix(myTimer: func.TimerRequest) -> None:
     pp = {"Drawdown","Momentum_1M","Momentum_3M","RV_5d","RV_21d","VIX_Vol_5d","VIX_Vol_21d"}
 
     rows = []
-    for k in feature_cols:
+    for k in output_feature_cols:
         if k in last.index and isinstance(last[k], (int,float)):
             name = k
             val = f"{last[k]*100:.2f}%" if k in pp else f"{last[k]:.2f}"
